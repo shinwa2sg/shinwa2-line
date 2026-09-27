@@ -98,6 +98,16 @@
   const COUPON_END = new Date('2026-10-17T23:59:59+09:00');
   const COUPON_ACTIVE = new Date() <= COUPON_END && new URLSearchParams(location.search).get('after') !== '1';
 
+  // 紙の割引券のQR（?k=8文字のコード）から来た場合の配布コード。住民には番号がわからない形で、
+  // GAS 側で配布番号に戻してシートへ記録する。liff.line.me 経由だと最初は liff.state に入っているので両方を見る。
+  function readDistKey() {
+    const p = new URLSearchParams(location.search);
+    let k = p.get('k');
+    if (!k && p.get('liff.state')) k = new URLSearchParams(p.get('liff.state').replace(/^[^?]*\?/, '')).get('k');
+    return /^[0-9a-f]{8}$/.test(k || '') ? k : '';
+  }
+  let DIST_KEY = readDistKey();
+
   const $ = (id) => document.getElementById(id);
   const show = (id) => {
     ['view-loading', 'view-form', 'view-done', 'view-error'].forEach((v) => $(v).classList.toggle('hidden', v !== id));
@@ -118,6 +128,8 @@
     }
     try {
       await liff.init({ liffId: LIFF_ID });
+      DIST_KEY = DIST_KEY || readDistKey();
+      if (DIST_KEY && liff.isLoggedIn()) history.replaceState(null, '', location.pathname);
       if (!liff.isLoggedIn()) {
         liff.login({ redirectUri: location.href });
         return;
@@ -125,6 +137,14 @@
       const profile = await liff.getProfile();
       $('greeting').textContent = `${profile.displayName} さん、以下をご入力ください。`;
       show('view-form');
+      // 紙のQRから開いた場合は、フォームを送らなくてもアカウントと配布番号を記録する（画面には何も出さない）
+      if (DIST_KEY) {
+        fetch(GAS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'scan', idToken: liff.getIDToken(), distKey: DIST_KEY }),
+        }).catch(() => {});
+      }
     } catch (err) {
       $('error-detail').textContent = String(err && err.message || err);
       show('view-error');
@@ -182,7 +202,7 @@
         liff.login({ redirectUri: location.href });
         return;
       }
-      const result = await postRegister({ action: 'register', idToken, kumi, setai, banchi, consent });
+      const result = await postRegister({ action: 'register', idToken, kumi, setai, banchi, consent, distKey: DIST_KEY });
       if (!result.ok) {
         const msg = result.error === 'invalid_token'
           ? 'ログインの有効期限が切れました。フォームを開き直してください。'
